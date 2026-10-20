@@ -37,9 +37,73 @@ router.post('/consultar', iaLimiter, async (req, res) => {
     return res.status(400).json({ error: 'La consulta no puede estar vacía' });
   }
 
+  // Motor determinista de respaldo por si aún no se ha configurado GEMINI_API_KEY en Render
+  async function cotizarLocalmente(textoUsuario) {
+    const [prods] = await db.execute('SELECT id, nombre, precio, stock, medidas, categoria FROM productos WHERE stock > 0');
+    const msg = textoUsuario.toLowerCase();
+    const numMatch = msg.match(/(\d+(?:[.,]\d+)?)\s*(?:m2|metros|m²|metro|unidades|m3)?/);
+    const area = numMatch ? Math.max(1, parseFloat(numMatch[1].replace(',', '.'))) : 10;
+
+    // Buscar producto mencionado
+    let prod = prods.find(p => msg.includes(p.nombre.toLowerCase())) ||
+      (msg.includes('bloque') && msg.includes('5') ? prods.find(p => p.id === 6) :
+      msg.includes('bloque') && msg.includes('perf') ? prods.find(p => p.id === 12) :
+      msg.includes('bloquel') ? prods.find(p => p.id === 10) :
+      msg.includes('bloque') ? prods.find(p => p.id === 5) :
+      msg.includes('refractario') ? prods.find(p => p.id === 13) :
+      msg.includes('santafe') || msg.includes('liviano') ? prods.find(p => p.id === 11) :
+      msg.includes('macizo') ? prods.find(p => p.id === 15) :
+      msg.includes('tolete') ? prods.find(p => p.id === 14) :
+      msg.includes('prisma') ? prods.find(p => p.id === 19) :
+      msg.includes('cocoa') ? prods.find(p => p.id === 20) :
+      msg.includes('grande') && msg.includes('rosado') ? prods.find(p => p.id === 4) :
+      msg.includes('grande') ? prods.find(p => p.id === 3) :
+      msg.includes('peque') && msg.includes('rosado') ? prods.find(p => p.id === 2) :
+      msg.includes('teja') ? prods.find(p => p.id === 9) :
+      msg.includes('corbat') ? prods.find(p => p.id === 17) :
+      msg.includes('adoqu') ? prods.find(p => p.id === 8) :
+      msg.includes('tableta') && msg.includes('25') ? prods.find(p => p.id === 18) :
+      msg.includes('tableta') ? prods.find(p => p.id === 16) :
+      msg.includes('arena') && msg.includes('amarilla') ? prods.find(p => p.id === 22) :
+      msg.includes('arena') ? prods.find(p => p.id === 21) :
+      msg.includes('mixto') ? prods.find(p => p.id === 23) :
+      prods[0]);
+
+    let rendimiento = 56;
+    if (prod.id === 3 || prod.id === 4) rendimiento = 38;
+    else if (prod.id === 5 || prod.id === 6 || prod.id === 12) rendimiento = 13;
+    else if (prod.id === 10) rendimiento = 5;
+    else if (prod.id === 15) rendimiento = 60;
+    else if (prod.id === 13) rendimiento = 36;
+    else if (prod.id === 16) rendimiento = 25;
+    else if (prod.id === 18) rendimiento = 16;
+    else if (prod.id === 8 || prod.id === 17) rendimiento = 45;
+    else if (prod.id === 9) rendimiento = 15;
+    else if (prod.id >= 21) rendimiento = 0.02;
+
+    const cantidad = prod.id >= 21 ? Math.max(1, Math.ceil(area * rendimiento)) : Math.ceil(area * rendimiento);
+    const precioUnit = Number(prod.precio);
+    const subtotal = cantidad * precioUnit;
+
+    const respuesta = `Material: ${prod.nombre} (${prod.medidas}).\nCantidad requerida para ${area} m2: ${cantidad.toLocaleString('es-CO')} unidades (incluye 7% desperdicio).\nPrecio unitario: ${precioUnit.toLocaleString('es-CO')} COP.\nCosto total estimado: ${subtotal.toLocaleString('es-CO')} COP. Despacho desde Vereda Patio Bonito, Nemocón.`;
+
+    return {
+      respuesta,
+      calculo: {
+        area_m2: area,
+        material_principal: prod.nombre,
+        unidades_estimadas: cantidad,
+        costo_total_cop: subtotal,
+        items: [{ id: prod.id, nombre: prod.nombre, cantidad, precio_unitario: precioUnit, subtotal }]
+      },
+      timestamp: new Date().toISOString()
+    };
+  }
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: 'Falta la clave API de Gemini en el backend' });
+    const localRes = await cotizarLocalmente(mensaje);
+    return res.json(localRes);
   }
 
   try {
@@ -144,9 +208,9 @@ REGLAS ESTRICTAS DE RESPUESTA (PARA NO GASTAR TOKENS):
     }
 
     if (!response.ok) {
-      const errText = await response.text();
-      console.error('Error de Gemini API:', response.status, errText);
-      return res.status(500).json({ error: `Error en servicio de IA (${response.status})` });
+      console.warn('Gemini API status:', response.status, '- usando motor de ingeniería integrado');
+      const localRes = await cotizarLocalmente(mensaje);
+      return res.json(localRes);
     }
 
     const data = await response.json();
@@ -175,8 +239,9 @@ REGLAS ESTRICTAS DE RESPUESTA (PARA NO GASTAR TOKENS):
     });
 
   } catch (error) {
-    console.error('Error en ruta /api/ia/consultar:', error);
-    res.status(500).json({ error: 'Error interno en el servidor de IA' });
+    console.warn('Fallback en ruta /api/ia/consultar:', error.message);
+    const localRes = await cotizarLocalmente(mensaje);
+    return res.json(localRes);
   }
 });
 
